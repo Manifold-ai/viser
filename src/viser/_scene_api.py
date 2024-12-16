@@ -1241,7 +1241,9 @@ class SceneApi:
                 material=material,
             ),
         )
-        return MeshHandle._make(self, message, name, wxyz, position, visible)
+        _make_message = MeshHandle._make(self, message, name, wxyz, position, visible)
+        print("server _make_message:", _make_message)
+        return _make_message
 
     def add_mesh_trimesh(
         self,
@@ -1372,10 +1374,10 @@ class SceneApi:
         Returns:
             Handle for manipulating scene node.
         """
+        print("add_box inner")
         import trimesh.creation
 
         mesh = trimesh.creation.box(dimensions)
-
         return self.add_mesh_simple(
             name=name,
             vertices=mesh.vertices,
@@ -1415,7 +1417,7 @@ class SceneApi:
         import trimesh.creation
 
         mesh = trimesh.creation.icosphere(subdivisions=subdivisions, radius=radius)
-
+        print("add_icosphere inner")
         # We use add_mesh_simple() because it lets us do smooth shading;
         # add_mesh_trimesh() currently does not.
         return self.add_mesh_simple(
@@ -1667,10 +1669,12 @@ class SceneApi:
         if handle is None or handle._impl.click_cb is None:
             return
         for cb in handle._impl.click_cb:
+            print("_handle_node_click_updates:",message)
             event = SceneNodePointerEvent(
                 client=self._get_client_handle(client_id),
                 client_id=client_id,
-                event="click",
+                # event = "drag"
+                event=message.event_type,
                 target=cast(_ClickableSceneNodeHandle, handle),
                 ray_origin=message.ray_origin,
                 ray_direction=message.ray_direction,

@@ -525,6 +525,7 @@ export interface SceneNodeClickMessage {
   type: "SceneNodeClickMessage";
   name: string;
   instance_index: number | null;
+  event_type: string;
   ray_origin: [number, number, number];
   ray_direction: [number, number, number];
   screen_pos: [number, number];

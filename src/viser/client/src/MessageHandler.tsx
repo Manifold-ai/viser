@@ -63,6 +63,7 @@ function useMessageHandler() {
       });
     }
     addSceneNode(message);
+
   }
 
   const fileDownloadHandler = useFileDownloadHandler();
@@ -375,6 +376,7 @@ function useMessageHandler() {
       case "SetSceneNodeClickableMessage": {
         // This setTimeout is totally unnecessary, but can help surface some race
         // conditions.
+        // setClickable(message.name, message.clickable)
         setTimeout(() => setClickable(message.name, message.clickable), 50);
         return;
       }

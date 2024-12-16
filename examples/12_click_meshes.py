@@ -39,36 +39,71 @@ def main() -> None:
 
         colormap = matplotlib.colormaps["tab20"]
 
-        def create_mesh(counter: int) -> None:
+
+        def create_mesh(counter: int, position = (0,0,0), event_type="clicked",_=(0,)) -> None:
+            print("color:",counter)
             if counter == 0:
                 color = (0.8, 0.8, 0.8)
             else:
                 index = (i * grid_shape[1] + j) / (grid_shape[0] * grid_shape[1])
                 color = colormap(index)[:3]
+            if event_type == "clicked":
+                print("clicked")
+                if counter in (0, 1):
+                    handle = server.scene.add_box(
+                        name=f"/sphere_{i}_{j}",
+                        position=(i, j, 0.0),
+                        color=color,
+                        dimensions=(0.5, 0.5, 0.5),
+                    )
+                else:
+                    handle = server.scene.add_icosphere(
+                        name=f"/sphere_{i}_{j}",
+                        radius=0.4,
+                        color=color,
+                        position=(position[0], position[1], position[2]),
 
-            if counter in (0, 1):
-                handle = server.scene.add_box(
-                    name=f"/sphere_{i}_{j}",
-                    position=(i, j, 0.0),
-                    color=color,
-                    dimensions=(0.5, 0.5, 0.5),
-                )
+                    )
+                    # print("create_mesh handle:", handle)
             else:
-                handle = server.scene.add_icosphere(
-                    name=f"/sphere_{i}_{j}",
-                    radius=0.4,
-                    color=color,
-                    position=(i, j, 0.0),
-                )
+                print("move_mesh")
+                if counter in (0, 1):
+                    print("handle1:")
+                    handle = server.scene.add_box(
+                        name=f"/sphere_{i}_{j}",
+                        position=(position[0], position[1], position[2]),
+                        color=color,
+                        dimensions=(0.5, 0.5, 0.5),
+                        wxyz=(0, _.ray_direction[1], _.ray_direction[2], _.ray_direction[3]),
+                    )
+                    print("handle11:", handle)
+                else:
+                    print("handle2:")
+                    handle = server.scene.add_icosphere(
+                        name=f"/sphere_{i}_{j}",
+                        radius=0.4,
+                        color=color,
+                        position=(position[0], position[1], position[2]),
+                    )
+                    print("handle22:", handle)
+
+
 
             @handle.on_click
             def _(_) -> None:
-                x_value.value = i
-                y_value.value = j
+                # print("_:",_)
+                if _.event == "clicked":
+                    print("clicked")
+                    x_value.value = i
+                    y_value.value = j
 
-                # The new mesh will replace the old one because the names
-                # /sphere_{i}_{j} are the same.
-                create_mesh((counter + 1) % 3)
+                    # The new mesh will replace the old one because the names
+                    # /sphere_{i}_{j} are the same.
+                    create_mesh((counter + 1) % 3, _.screen_pos,"clicked", _)
+                else:
+                    print("drag")
+                    create_mesh((counter + 1) % 3, _.screen_pos,"drag",_)
+
 
         create_mesh(0)
 

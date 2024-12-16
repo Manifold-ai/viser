@@ -126,6 +126,8 @@ class ScenePointerEvent:
         return self.event_type
 
 
+# TypeVar("TSceneNodeHandle", bound="SceneNodeHandle")：表示定义了一个名为 TSceneNodeHandle 的类型变量，并且通过 bound 参数指定了一个约束条件。
+# 这里的 bound 表示这个类型变量 TSceneNodeHandle 被限定为 SceneNodeHandle 类型或者是 SceneNodeHandle 的子类（如果是面向对象编程且涉及类继承体系的话）
 TSceneNodeHandle = TypeVar("TSceneNodeHandle", bound="SceneNodeHandle")
 
 
@@ -179,6 +181,7 @@ class SceneNodeHandle:
         server-side state."""
         # Send message.
         assert isinstance(message, _messages.Message)
+
         api._websock_interface.queue_message(message)
 
         out = cls(_SceneNodeHandleState(name, copy.deepcopy(message.props), api))
@@ -269,7 +272,7 @@ class SceneNodePointerEvent(Generic[TSceneNodeHandle]):
     """Client that triggered this event."""
     client_id: int
     """ID of client that triggered this event."""
-    event: Literal["click"]
+    event: Literal["click", "drag"]
     """Type of event that was triggered. Currently we only support clicks."""
     target: TSceneNodeHandle
     """Scene node that was clicked."""
@@ -287,6 +290,49 @@ class SceneNodePointerEvent(Generic[TSceneNodeHandle]):
 NoneOrCoroutine = TypeVar("NoneOrCoroutine", None, Coroutine)
 
 
+# class _DraggableSceneNodeHandle(SceneNodeHandle):
+#     def on_drag(
+#         self: Self,
+#         func: Callable[[SceneNodePointerEvent[Self]], NoneOrCoroutine],
+#     ) -> Callable[[SceneNodePointerEvent[Self]], NoneOrCoroutine]:
+#         """Attach a callback for when a scene node is clicked.
+#
+#         The callback can be either a standard function or an async function:
+#         - Standard functions (def) will be executed in a threadpool.
+#         - Async functions (async def) will be executed in the event loop.
+#
+#         Using async functions can be useful for reducing race conditions.
+#         """
+#         self._impl.api._websock_interface.queue_message(
+#             _messages.SetSceneNodeClickableMessage(self._impl.name, True)
+#         )
+#         if self._impl.click_cb is None:
+#             self._impl.click_cb = []
+#         self._impl.click_cb.append(
+#             cast(
+#                 Callable[
+#                     [SceneNodePointerEvent[_ClickableSceneNodeHandle]],
+#                     # `Union[X, Y]` instead of `X | Y` for Python 3.8 support.
+#                     Union[None, Coroutine],
+#                 ],
+#                 func,
+#             )
+#         )
+#         return func
+#
+#     def remove_drag_callback(
+#         self, callback: Literal["all"] | Callable = "all"
+#     ) -> None:
+#         """Remove click callbacks from scene node.
+#
+#         Args:
+#             callback: Either "all" to remove all callbacks, or a specific callback function to remove.
+#         """
+#         if callback == "all":
+#             self._impl.click_cb.clear()
+#         else:
+#             self._impl.click_cb = [cb for cb in self._impl.click_cb if cb != callback]
+
 class _ClickableSceneNodeHandle(SceneNodeHandle):
     def on_click(
         self: Self,
@@ -300,11 +346,17 @@ class _ClickableSceneNodeHandle(SceneNodeHandle):
 
         Using async functions can be useful for reducing race conditions.
         """
+        # 发送一条SceneNodeClickableMessage
         self._impl.api._websock_interface.queue_message(
             _messages.SetSceneNodeClickableMessage(self._impl.name, True)
         )
+        # 收集回调函数
         if self._impl.click_cb is None:
             self._impl.click_cb = []
+
+        # 在方括号内，[SceneNodePointerEvent[_ClickableSceneNodeHandle]]
+        # 表示这个可调用对象（也就是要添加的func函数）接收一个参数，参数的类型是
+        # SceneNodePointerEvent类型且其关联着 _ClickableSceneNodeHandle类型
         self._impl.click_cb.append(
             cast(
                 Callable[

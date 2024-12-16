@@ -7,10 +7,9 @@ import {
   useCursor,
 } from "@react-three/drei";
 import { useContextBridge } from "its-fine";
-import { createPortal, useFrame } from "@react-three/fiber";
+import {createPortal, useFrame, useThree} from "@react-three/fiber";
 import React from "react";
 import * as THREE from "three";
-
 import { ViewerContext } from "./App";
 import {
   makeThrottledMessageSender,
@@ -35,6 +34,7 @@ import { SceneNodeMessage } from "./WebsocketMessages";
 import { SplatObject } from "./Splatting/GaussianSplats";
 import { Paper } from "@mantine/core";
 import GeneratedGuiContainer from "./ControlPanel/Generated";
+import {DragControls} from "three/examples/jsm/controls/DragControls";
 
 function rgbToInt(rgb: [number, number, number]): number {
   return (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
@@ -48,7 +48,7 @@ function SceneNodeThreeChildren(props: {
   parent: THREE.Object3D;
 }) {
   const viewer = React.useContext(ViewerContext)!;
-
+  //   声明了一个名为 children 的状态变量以及与之对应的用于更新该状态的函数 setChildren
   const [children, setChildren] = React.useState<string[]>(
     viewer.useSceneTree.getState().nodeFromName[props.name]?.children ?? [],
   );
@@ -271,6 +271,7 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
     // Add mesh
     case "SkinnedMeshMessage":
     case "MeshMessage": {
+        console.log("MeshMessage");
       return { makeObject: (ref) => <ViserMesh ref={ref} {...message} /> };
     }
     // Add a camera frustum.
@@ -623,10 +624,15 @@ export function SceneNodeThreeObject(props: {
   name: string;
   parent: THREE.Object3D | null;
 }) {
+
   const viewer = React.useContext(ViewerContext)!;
   const message = viewer.useSceneTree(
     (state) => state.nodeFromName[props.name]?.message,
   );
+
+    console.log("start SceneNodeThreeObject");
+
+    // viewer.useSceneTree.
   const {
     makeObject,
     unmountWhenInvisible,
@@ -650,6 +656,9 @@ export function SceneNodeThreeObject(props: {
   // For not-fully-understood reasons, wrapping makeObject with useMemo() fixes
   // stability issues (eg breaking runtime errors) associated with
   // PivotControls.
+  //   在 React 中，useMemo 用于优化性能，避免在每次组件重新渲染时都重复执行一些相对复杂或者开销较大的计算。它接受两个参数：
+    // 第一个参数是一个函数，这个函数内部包含了需要进行计算或者生成返回值的逻辑，并且只有在依赖项（第二个参数指定）发生变化时，这个函数才会重新执行，然后返回新的计算结果；否则，会直接返回上一次缓存的结果，以此来减少不必要的计算开销。
+    // 第二个参数是一个依赖项数组，用于指定哪些值的变化会触发 useMemo 里第一个参数中的函数重新执行。
   const objNode = React.useMemo(() => {
     if (makeObject === undefined) return null;
 
@@ -659,13 +668,39 @@ export function SceneNodeThreeObject(props: {
       attrs[props.name] = {};
     }
     attrs[props.name]!.poseUpdateState = "needsUpdate";
-
     return makeObject(setRef);
   }, [makeObject]);
+
   const children =
     obj === null ? null : (
       <SceneNodeThreeChildren name={props.name} parent={obj} />
     );
+        console.log("children:",children?.props.name);
+        const camera = useThree((state) => state.camera);
+        const scene = useThree((state) => state.scene);
+        const renderer = useThree((state) => state.gl);
+        // Render the scene.
+
+        // for (let i = 0; i < scene.children.length; i++) {
+        //     const child = scene.children[i];
+        // // 在这里可以对每个child对象进行操作，比如打印相关信息、修改属性等
+        //     viewer.draggableObjectRef.current.push(child);
+        // }
+
+        // viewer.draggableObjectRef.current.push(obj?.getObjectByName(children?.props.name));
+        function render() {
+            renderer.render(scene, camera );
+        }
+        // viewer.draggableObjectRef.current.push(scene.getObjectByName(children?.props.name));
+        console.log("scene.children:",scene.children,"viewer.draggableObjectRef:",viewer.draggableObjectRef.current);
+        const dControls = new DragControls(scene.children, camera, renderer.domElement);
+        dControls.activate();
+        dControls.enabled = true;
+        dControls.rotateSpeed = 2;
+        dControls.addEventListener("drag",render);
+        // dControls.transformGroup = true;
+
+
 
   // Helper for transient visibility checks. Checks the .visible attribute of
   // both this object and ancestors.
@@ -760,13 +795,17 @@ export function SceneNodeThreeObject(props: {
 
   // Clicking logic.
   const sendClicksThrottled = useThrottledMessageSender(50);
+  // React.useState是 React 中的一个钩子函数（Hook），用于在函数组件中添加状态（state）。
+    // 它使得函数组件能够像类组件一样拥有和管理自己的内部状态，并且在状态发生改变时，触发组件重新渲染。
   const [hovered, setHovered] = React.useState(false);
   useCursor(hovered);
   const hoveredRef = React.useRef(false);
   if (!clickable && hovered) setHovered(false);
-
+  // useRef 是一个常用的钩子函数，它返回一个可变的引用对象，其 .current 属性初始值可以通过传入参数来设定（在这里传入了一个对象作为初始值）。
+    // 这个引用对象在组件的整个生命周期内持续存在
   const dragInfo = React.useRef({
     dragging: false,
+      onclicked:false,
     startClientX: 0,
     startClientY: 0,
   });
@@ -776,6 +815,7 @@ export function SceneNodeThreeObject(props: {
   } else if (clickable) {
     return (
       <>
+        {/*  在 React 应用中用于捕获子组件渲染过程中出现的错误，防止错误导致整个应用崩溃，提升应用的稳定性和容错性*/}
         <ErrorBoundary
           fallbackRender={() => {
             // This sometimes (but very rarely) catches a race condition when
@@ -796,33 +836,94 @@ export function SceneNodeThreeObject(props: {
             //  - onPointerMove, if triggered, sets dragged = true
             //  - onPointerUp, if triggered, sends a click if dragged = false.
             // Note: It would be cool to have dragged actions too...
+              //指针事件：如onPointerDown、onPointerMove、onPointerUp等，用于处理用户使用触摸屏或触控笔的操作
             onPointerDown={(e) => {
               if (!isDisplayed()) return;
               e.stopPropagation();
               const state = dragInfo.current;
-              const canvasBbox =
-                viewer.canvasRef.current!.getBoundingClientRect();
+              const canvasBbox = viewer.canvasRef.current!.getBoundingClientRect();
               state.startClientX = e.clientX - canvasBbox.left;
               state.startClientY = e.clientY - canvasBbox.top;
               state.dragging = false;
+              state.onclicked = true;
+              console.log("onPointerDown:",e);
             }}
+
             onPointerMove={(e) => {
-              if (!isDisplayed()) return;
-              e.stopPropagation();
-              const state = dragInfo.current;
-              const canvasBbox =
-                viewer.canvasRef.current!.getBoundingClientRect();
-              const deltaX = e.clientX - canvasBbox.left - state.startClientX;
-              const deltaY = e.clientY - canvasBbox.top - state.startClientY;
+                const state = dragInfo.current;
+                if(!state.onclicked) return;
               // Minimum motion.
-              if (Math.abs(deltaX) <= 3 && Math.abs(deltaY) <= 3) return;
-              state.dragging = true;
+                e.stopPropagation();
+                if (!isDisplayed()) return;
+
+                const canvasBbox =
+                viewer.canvasRef.current!.getBoundingClientRect();
+                const deltaX = e.clientX - canvasBbox.left - state.startClientX;
+                 const deltaY = e.clientY - canvasBbox.top - state.startClientY;
+                 if (Math.abs(deltaX) <= 3 && Math.abs(deltaY) <= 3){
+                      console.log("not move enough");
+                      return;
+                }
+              // const existingNode = state.nodeFromName[message.name]
+                  console.log("onPointerMove：",e);
+                  state.dragging = true;
+                  viewer.cameraControlRef.current!.enabled = false;
+            //
+            //    // -------bd
+            //   const newX = state.startClientX + deltaX;
+            //   const newY = state.startClientY + deltaY;
+            //   // 让照相机停止移动
+
+            //
+            //   const ray = rayToViserCoords(viewer, e.ray);
+            //   const firstMouseVector = opencvXyFromPointerXy(viewer, [
+            //     e.clientX,
+            //     e.clientY,
+            //   ]);
+            //   const lastMouseVector = opencvXyFromPointerXy(viewer, [
+            //     newX,
+            //     newY,
+            //   ]);
+            // //   const ctx = viewer.canvas2dRef.current!.getContext("2d")!;
+            // //   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            // // ctx.beginPath();
+            // // ctx.strokeStyle = "blue";
+            // // ctx.globalAlpha = 0.2;
+            // // ctx.fillRect(
+            // //   state.startClientX,
+            // //   state.startClientY,
+            // //   deltaX,
+            // //   deltaY,
+            // // );
+            // // ctx.globalAlpha = 1.0;
+            // // ctx.stroke();
+            //
+            //   // sendClicksThrottled({
+            //   //   type: "SceneNodeClickMessage",
+            //   //   name: props.name,
+            //   //   instance_index:
+            //   //     computeClickInstanceIndexFromInstanceId === undefined
+            //   //       ? null
+            //   //       : computeClickInstanceIndexFromInstanceId(e.instanceId),
+            //   //   // Note that the threejs up is +Y, but we expose a +Z up.
+            //   //     event_type:"drag",
+            //   //   ray_origin: [ray.origin.x, ray.origin.y, ray.origin.z],
+            //   //   ray_direction: [
+            //   //     ray.direction.x,
+            //   //     ray.direction.y,
+            //   //     ray.direction.z,
+            //   //   ],
+            //   //   screen_pos: [lastMouseVector.x, lastMouseVector.y],
+            //   // });
+                //   -------bd
             }}
             onPointerUp={(e) => {
               if (!isDisplayed()) return;
               e.stopPropagation();
               const state = dragInfo.current;
-              if (state.dragging) return;
+              state.onclicked = false;
+              // state.dragging = false;
+              // if (state.dragging) return;
               // Convert ray to viser coordinates.
               const ray = rayToViserCoords(viewer, e.ray);
 
@@ -830,8 +931,8 @@ export function SceneNodeThreeObject(props: {
               const canvasBbox =
                 viewer.canvasRef.current!.getBoundingClientRect();
               const mouseVectorOpenCV = opencvXyFromPointerXy(viewer, [
-                e.clientX - canvasBbox.left,
-                e.clientY - canvasBbox.top,
+                e.clientX - state.startClientX - canvasBbox.left,
+                e.clientY - state.startClientY - canvasBbox.top,
               ]);
 
               sendClicksThrottled({
@@ -841,6 +942,7 @@ export function SceneNodeThreeObject(props: {
                   computeClickInstanceIndexFromInstanceId === undefined
                     ? null
                     : computeClickInstanceIndexFromInstanceId(e.instanceId),
+                  event_type:"clicked",
                 // Note that the threejs up is +Y, but we expose a +Z up.
                 ray_origin: [ray.origin.x, ray.origin.y, ray.origin.z],
                 ray_direction: [
@@ -850,18 +952,67 @@ export function SceneNodeThreeObject(props: {
                 ],
                 screen_pos: [mouseVectorOpenCV.x, mouseVectorOpenCV.y],
               });
+
+              console.log("onPointerUp!!");
             }}
             onPointerOver={(e) => {
               if (!isDisplayed()) return;
               e.stopPropagation();
               setHovered(true);
               hoveredRef.current = true;
+              console.log("onPointerOver");
             }}
             onPointerOut={() => {
               if (!isDisplayed()) return;
               setHovered(false);
               hoveredRef.current = false;
             }}
+
+            onPointerLeave={(e) => {
+              if (!isDisplayed()) return;
+              e.stopPropagation();
+
+              const state = dragInfo.current;
+
+              // if (state.dragging) return;
+              // Convert ray to viser coordinates.
+              const ray = rayToViserCoords(viewer, e.ray);
+                // console.log("onPointerLeave1:",state);
+              if (state.dragging == true) {
+                  // console.log("onPointerLeave2:",state,e.clientX,e.clientY);
+                  // Send OpenCV image coordinates to the server (normalized).
+                  const canvasBbox =
+                    viewer.canvasRef.current!.getBoundingClientRect();
+                  const mouseVectorOpenCV = opencvXyFromPointerXy(viewer, [
+                       e.clientX - canvasBbox.left,
+                     e.clientY - canvasBbox.top,
+                  ]);
+                  // console.log("pointer leaver mouseVectorOpenCV:",mouseVectorOpenCV.x,
+                  //     mouseVectorOpenCV.y);
+
+                  // sendClicksThrottled({
+                  //   type: "SceneNodeClickMessage",
+                  //   name: props.name,
+                  //   instance_index:
+                  //     computeClickInstanceIndexFromInstanceId === undefined
+                  //       ? null
+                  //       : computeClickInstanceIndexFromInstanceId(e.instanceId),
+                  //     event_type:"drag",
+                  //   // Note that the threejs up is +Y, but we expose a +Z up.
+                  //   ray_origin: [ray.origin.x, ray.origin.y, ray.origin.z],
+                  //   ray_direction: [
+                  //     ray.direction.x,
+                  //     ray.direction.y,
+                  //     ray.direction.z,
+                  //   ],
+                  //   screen_pos: [mouseVectorOpenCV.x, mouseVectorOpenCV.y],
+                  // });
+                  state.onclicked = false;
+                  state.dragging = false;
+              }
+
+            }
+            }
           >
             <HoverableContext.Provider value={hoveredRef}>
               {objNode}

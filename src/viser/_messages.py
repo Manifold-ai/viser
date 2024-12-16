@@ -767,6 +767,7 @@ class SceneNodeClickMessage(Message):
 
     name: str
     instance_index: Optional[int]
+    event_type: str
     """Instance index. Currently only used for batched axes."""
     ray_origin: Tuple[float, float, float]
     ray_direction: Tuple[float, float, float]

@@ -92,6 +92,7 @@ export function useSceneTreeState(
           }),
         addSceneNode: (message) =>
           set((state) => {
+
             const existingNode = state.nodeFromName[message.name];
             if (existingNode !== undefined) {
               // Node already exists.
@@ -113,6 +114,7 @@ export function useSceneTreeState(
               };
               state.nodeFromName[parent_name]!.children.push(message.name);
             }
+
           }),
         removeSceneNode: (name) =>
           set((state) => {

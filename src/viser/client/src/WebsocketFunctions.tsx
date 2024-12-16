@@ -25,7 +25,7 @@ export function makeThrottledMessageSender(
       viewer.sendMessageRef.current(message);
       stale = false;
       readyToSend = false;
-
+      console.log("message:",message);
       setTimeout(() => {
         readyToSend = true;
         if (!stale) return;

@@ -49,6 +49,7 @@ import { FrameSynchronizedMessageHandler } from "./MessageHandler";
 import { PlaybackFromFile } from "./FilePlayback";
 import { SplatRenderContext } from "./Splatting/GaussianSplats";
 import { BrowserWarning } from "./BrowserWarning";
+import {DragControls} from "three/examples/jsm/controls/DragControls";
 
 export type ViewerContextContents = {
   messageSource: "websocket" | "file_playback";
@@ -60,8 +61,8 @@ export type ViewerContextContents = {
   // We could have just one ref to a global mutable struct.
   sendMessageRef: React.MutableRefObject<(message: Message) => void>;
   canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
-  sceneRef: React.MutableRefObject<THREE.Scene | null>;
-  cameraRef: React.MutableRefObject<THREE.PerspectiveCamera | null>;
+  sceneRef: React.MutableRefObject<THREE.Scene| null>;
+  cameraRef: React.MutableRefObject<THREE.PerspectiveCamera| null>;
   backgroundMaterialRef: React.MutableRefObject<THREE.ShaderMaterial | null>;
   cameraControlRef: React.MutableRefObject<CameraControls | null>;
   sendCameraRef: React.MutableRefObject<(() => void) | null>;
@@ -95,6 +96,7 @@ export type ViewerContextContents = {
     dragEnd: [number, number]; // Final mouse position.
     isDragging: boolean;
   }>;
+
   // 2D canvas for drawing -- can be used to give feedback on cursor movement, or more.
   canvas2dRef: React.MutableRefObject<HTMLCanvasElement | null>;
   // Poses for bones in skinned meshes.
@@ -107,10 +109,12 @@ export type ViewerContextContents = {
       }[];
     };
   }>;
+  draggableObjectRef: React.MutableRefObject<THREE.Object3D[]>;
 };
 export const ViewerContext = React.createContext<null | ViewerContextContents>(
   null,
 );
+
 
 THREE.ColorManagement.enabled = true;
 
@@ -137,6 +141,8 @@ function ViewerRoot() {
   const playbackPath = searchParams.get("playbackPath");
   const darkMode = searchParams.get("darkMode") !== null;
   const showStats = searchParams.get("showStats") !== null;
+
+
 
   // Values that can be globally accessed by components in a viewer.
   const nodeRefFromName = React.useRef<{
@@ -184,10 +190,13 @@ function ViewerRoot() {
     }),
     canvas2dRef: React.useRef(null),
     skinnedMeshState: React.useRef({}),
+    draggableObjectRef: React.useRef([]),
   };
 
   // Set dark default if specified in URL.
   if (darkMode) viewer.useGui.getState().theme.dark_mode = darkMode;
+
+
 
   return (
     <ViewerContext.Provider value={viewer}>
@@ -209,6 +218,7 @@ function ViewerContents({ children }: { children: React.ReactNode }) {
   const darkMode = viewer.useGui((state) => state.theme.dark_mode);
   const colors = viewer.useGui((state) => state.theme.colors);
   const controlLayout = viewer.useGui((state) => state.theme.control_layout);
+
   return (
     <>
       <ColorSchemeScript forceColorScheme={darkMode ? "dark" : "light"} />
@@ -286,6 +296,7 @@ const DisableRender = () => useFrame(() => null, 1000);
 
 function ViewerCanvas({ children }: { children: React.ReactNode }) {
   const viewer = React.useContext(ViewerContext)!;
+
   const sendClickThrottled = useThrottledMessageSender(20);
   const theme = useMantineTheme();
 
@@ -346,6 +357,7 @@ function ViewerCanvas({ children }: { children: React.ReactNode }) {
           ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
         }}
         onPointerMove={(e) => {
+          // console.log("App.tsx onPointerMove:",e);
           const pointerInfo = viewer.scenePointerInfo.current!;
 
           // Only handle if click events are enabled, and if pointer is down (i.e., dragging).
@@ -399,7 +411,7 @@ function ViewerCanvas({ children }: { children: React.ReactNode }) {
 
           const ctx = viewer.canvas2dRef.current!.getContext("2d")!;
           ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-
+          // console.log("App.tsx:",pointerInfo,"onPointerUp")
           // If there's only one pointer, send a click message.
           // The message will return origin/direction lists of length 1.
           if (pointerInfo.enabled === "click") {
@@ -746,6 +758,7 @@ function BackgroundImage() {
 /** Component for helping us set the scene reference. */
 function SceneContextSetter() {
   const { sceneRef, cameraRef } = React.useContext(ViewerContext)!;
+
   sceneRef.current = useThree((state) => state.scene);
   cameraRef.current = useThree(
     (state) => state.camera as THREE.PerspectiveCamera,
