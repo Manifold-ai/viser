@@ -6,8 +6,9 @@ import {
   PivotControls,
   useCursor,
 } from "@react-three/drei";
+import { DragControls } from 'three-stdlib';
 import { useContextBridge } from "its-fine";
-import { createPortal, useFrame } from "@react-three/fiber";
+import { createPortal, useFrame, useThree } from "@react-three/fiber";
 import React from "react";
 import * as THREE from "three";
 
@@ -167,7 +168,7 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
                 message.props.wxyzs_batched.buffer.slice(
                   message.props.wxyzs_batched.byteOffset,
                   message.props.wxyzs_batched.byteOffset +
-                    message.props.wxyzs_batched.byteLength,
+                  message.props.wxyzs_batched.byteLength,
                 ),
               )
             }
@@ -176,7 +177,7 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
                 message.props.positions_batched.buffer.slice(
                   message.props.positions_batched.byteOffset,
                   message.props.positions_batched.byteOffset +
-                    message.props.positions_batched.byteLength,
+                  message.props.positions_batched.byteLength,
                 ),
               )
             }
@@ -233,10 +234,10 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
                           ? new THREE.Euler(0.0, Math.PI / 2.0, 0.0)
                           : message.props.plane == "zy"
                             ? new THREE.Euler(
-                                -Math.PI / 2.0,
-                                0.0,
-                                -Math.PI / 2.0,
-                              )
+                              -Math.PI / 2.0,
+                              0.0,
+                              -Math.PI / 2.0,
+                            )
                             : undefined
               }
             />
@@ -258,7 +259,7 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
                 message.props.points.buffer.slice(
                   message.props.points.byteOffset,
                   message.props.points.byteOffset +
-                    message.props.points.byteLength,
+                  message.props.points.byteLength,
                 ),
               )
             }
@@ -518,7 +519,7 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
                 message.props.buffer.buffer.slice(
                   message.props.buffer.byteOffset,
                   message.props.buffer.byteOffset +
-                    message.props.buffer.byteLength,
+                  message.props.buffer.byteLength,
                 ),
               )
             }
@@ -624,6 +625,10 @@ export function SceneNodeThreeObject(props: {
   parent: THREE.Object3D | null;
 }) {
   const viewer = React.useContext(ViewerContext)!;
+  const scene = useThree((s) => s.scene);
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+
   const message = viewer.useSceneTree(
     (state) => state.nodeFromName[props.name]?.message,
   );
@@ -666,6 +671,44 @@ export function SceneNodeThreeObject(props: {
     obj === null ? null : (
       <SceneNodeThreeChildren name={props.name} parent={obj} />
     );
+
+  const cameraControlsRef = viewer.cameraControlRef;
+  const dragControlsRef = React.useRef<DragControls | null>(null);
+  console.log("dragControlsRef", dragControlsRef);
+  React.useEffect(() => {
+    if (!obj || !scene || !camera || !gl) return;
+
+    // Create a DragControls for this single object:
+    const dControls = new DragControls([obj], camera, gl.domElement);
+
+    // Enable or disable based on `clickable`:
+    dControls.enabled = clickable;
+
+    // If we want to keep object in the XY plane, we can adjust position.z = 0 on drag:
+    dControls.addEventListener("dragstart", () => {
+      // Disable orbit so we only move the object, not the camera
+      if (cameraControlsRef.current) {
+        cameraControlsRef.current.enabled = false;
+      }
+    });
+
+    dControls.addEventListener("drag", (event) => {
+      // Let’s cast the event to say: it includes `.object`
+      const e = event as unknown as { object: THREE.Object3D }
+      e.object.position.z = 0
+      console.log("drag", e.object.position)
+    })
+
+    dControls.addEventListener("dragend", () => {
+      // Re-enable orbit
+      if (cameraControlsRef.current) {
+        cameraControlsRef.current.enabled = true;
+      }
+    });
+
+    dragControlsRef.current = dControls;
+    return () => dControls.dispose();
+  }, [obj, scene, camera, gl, clickable]);
 
   // Helper for transient visibility checks. Checks the .visible attribute of
   // both this object and ancestors.
@@ -789,59 +832,39 @@ export function SceneNodeThreeObject(props: {
             return null;
           }}
         >
-          <group
-            // Instead of using onClick, we use onPointerDown/Move/Up to check mouse drag,
-            // and only send a click if the mouse hasn't moved between the down and up events.
-            //  - onPointerDown resets the click state (dragged = false)
-            //  - onPointerMove, if triggered, sets dragged = true
-            //  - onPointerUp, if triggered, sends a click if dragged = false.
-            // Note: It would be cool to have dragged actions too...
-            onPointerDown={(e) => {
-              if (!isDisplayed()) return;
-              e.stopPropagation();
-              const state = dragInfo.current;
-              const canvasBbox =
-                viewer.canvasRef.current!.getBoundingClientRect();
-              state.startClientX = e.clientX - canvasBbox.left;
-              state.startClientY = e.clientY - canvasBbox.top;
-              state.dragging = false;
-            }}
-            onPointerMove={(e) => {
-              if (!isDisplayed()) return;
-              e.stopPropagation();
-              const state = dragInfo.current;
-              const canvasBbox =
-                viewer.canvasRef.current!.getBoundingClientRect();
-              const deltaX = e.clientX - canvasBbox.left - state.startClientX;
-              const deltaY = e.clientY - canvasBbox.top - state.startClientY;
-              // Minimum motion.
-              if (Math.abs(deltaX) <= 3 && Math.abs(deltaY) <= 3) return;
-              state.dragging = true;
-            }}
-            onPointerUp={(e) => {
-              if (!isDisplayed()) return;
-              e.stopPropagation();
-              const state = dragInfo.current;
-              if (state.dragging) return;
-              // Convert ray to viser coordinates.
+      <group
+          onPointerDown={(e) => {
+            if (!isDisplayed() || !obj) return;
+            // DO NOT .stopPropagation() here,
+            // or else DragControls won't get the pointerDown event.
+            dragInfo.current.startClientX = e.clientX;
+            dragInfo.current.startClientY = e.clientY;
+            dragInfo.current.dragging = false;
+          }}
+          onPointerMove={(e) => {
+            if (!isDisplayed()) return;
+            const dx = e.clientX - dragInfo.current.startClientX;
+            const dy = e.clientY - dragInfo.current.startClientY;
+            if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+              dragInfo.current.dragging = true;
+            }
+          }}
+          onPointerUp={(e) => {
+            if (!isDisplayed()) return;
+            if (!dragInfo.current.dragging) {
+              // This was a click (no drag)
               const ray = rayToViserCoords(viewer, e.ray);
-
-              // Send OpenCV image coordinates to the server (normalized).
-              const canvasBbox =
-                viewer.canvasRef.current!.getBoundingClientRect();
+              const canvasBbox = viewer.canvasRef.current!.getBoundingClientRect();
               const mouseVectorOpenCV = opencvXyFromPointerXy(viewer, [
                 e.clientX - canvasBbox.left,
                 e.clientY - canvasBbox.top,
               ]);
-
               sendClicksThrottled({
                 type: "SceneNodeClickMessage",
                 name: props.name,
                 instance_index:
-                  computeClickInstanceIndexFromInstanceId === undefined
-                    ? null
-                    : computeClickInstanceIndexFromInstanceId(e.instanceId),
-                // Note that the threejs up is +Y, but we expose a +Z up.
+                  computeClickInstanceIndexFromInstanceId?.(e.instanceId) ??
+                  null,
                 ray_origin: [ray.origin.x, ray.origin.y, ray.origin.z],
                 ray_direction: [
                   ray.direction.x,
@@ -850,18 +873,18 @@ export function SceneNodeThreeObject(props: {
                 ],
                 screen_pos: [mouseVectorOpenCV.x, mouseVectorOpenCV.y],
               });
-            }}
-            onPointerOver={(e) => {
-              if (!isDisplayed()) return;
-              e.stopPropagation();
-              setHovered(true);
-              hoveredRef.current = true;
-            }}
-            onPointerOut={() => {
-              if (!isDisplayed()) return;
-              setHovered(false);
-              hoveredRef.current = false;
-            }}
+            }
+          }}
+          onPointerOver={() => {
+            if (!isDisplayed()) return;
+            setHovered(true);
+            hoveredRef.current = true;
+          }}
+          onPointerOut={() => {
+            if (!isDisplayed()) return;
+            setHovered(false);
+            hoveredRef.current = false;
+          }}
           >
             <HoverableContext.Provider value={hoveredRef}>
               {objNode}
