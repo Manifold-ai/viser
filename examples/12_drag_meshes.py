@@ -11,7 +11,7 @@ import viser
 
 
 def main() -> None:
-    grid_shape = (4, 5)
+    grid_shape = (1, 1)
     server = viser.ViserServer()
 
     with server.gui.add_folder("Last clicked"):
@@ -42,33 +42,19 @@ def main() -> None:
         def create_mesh(counter: int) -> None:
             if counter == 0:
                 color = (0.8, 0.8, 0.8)
-            else:
-                index = (i * grid_shape[1] + j) / (grid_shape[0] * grid_shape[1])
-                color = colormap(index)[:3]
-
-            if counter in (0, 1):
                 handle = server.scene.add_box(
                     name=f"/sphere_{i}_{j}",
                     position=(i, j, 0.0),
                     color=color,
                     dimensions=(0.5, 0.5, 0.5),
                 )
-            else:
-                handle = server.scene.add_icosphere(
-                    name=f"/sphere_{i}_{j}",
-                    radius=0.4,
-                    color=color,
-                    position=(i, j, 0.0),
-                )
+
 
             @handle.on_click
             def _(_) -> None:
                 x_value.value = i
                 y_value.value = j
 
-                # The new mesh will replace the old one because the names
-                # /sphere_{i}_{j} are the same.
-                create_mesh((counter + 1) % 3)
 
         create_mesh(0)
 
