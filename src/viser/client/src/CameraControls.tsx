@@ -244,16 +244,22 @@ export function SynchronizedCameraControls() {
     };
   }, [CameraControls]);
 
+  /**
+   * hack: in our scenario, we want to disable camera controls so that dragging the background scene tree nodes doesn't move the camera. This solution is based on the GitHub issue reply in https://github.com/nerfstudio-project/viser/issues/366
+   */
   return (
     <CameraControls
       ref={viewer.cameraControlRef}
       minDistance={0.1}
       maxDistance={200.0}
-      dollySpeed={0.3}
+      dollySpeed={0}
+      truckSpeed={0}
+      polarRotateSpeed={0}
+      azimuthRotateSpeed={0}
       smoothTime={0.05}
       draggingSmoothTime={0.0}
       onChange={sendCamera}
-      makeDefault
+      // makeDefault
     />
   );
 }
