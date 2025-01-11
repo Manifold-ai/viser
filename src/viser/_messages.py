@@ -1380,3 +1380,12 @@ class SetGuiPanelLabelMessage(Message):
     """Message from server->client to set the label of the GUI panel."""
 
     label: Optional[str]
+
+@dataclasses.dataclass
+class DragUpdateRequestMessage(Message):
+    """Message from client->server to request an update to a draggable component."""
+
+    name: str
+    x: float
+    z: float
+    is_end: bool
