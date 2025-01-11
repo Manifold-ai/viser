@@ -25,7 +25,6 @@ import {
   CameraFrustum,
   CoordinateFrame,
   GlbAsset,
-  HoverableContext,
   // HoverableContext,
   InstancedAxes,
   PointCloud,
@@ -712,6 +711,52 @@ export function SceneNodeThreeObject(props: {
     if (attrs !== undefined) attrs.poseUpdateState = "needsUpdate";
   });
 
+
+  const dragControlsRef = React.useRef<DragControls | null>(null);
+
+  React.useEffect(() => {
+    if (!obj || !scene || !camera || !gl) return;
+    // console.log("Creating DragControls for ", props.name, "with clickable", clickable)
+
+    // Create a DragControls for this single object:
+    const dControls = new DragControls([obj], camera, gl.domElement);
+
+    // Enable or disable based on clickable:
+    dControls.enabled = clickable;
+
+    // If we want to keep object in the XY plane, we can adjust position.z = 0 on drag:
+    dControls.addEventListener("dragstart", () => {
+      if (!clickable) return;
+    });
+
+    dControls.addEventListener("drag", (event) => {
+      const e = event as unknown as { object: THREE.Object3D };
+      const pos = e.object.position;
+      // ground plane
+      const plane = [-0.03567847, 0.98991655, 0.13708492, -1.25683163]
+      const [a, b, c, d] = plane
+      // initial position in viser coordinates
+      const start_x = -0.37504868286417525
+      const start_y = 0.5825777399524092
+      const start_z = 4.8663671016693115
+
+      const viser_x = pos.x + start_x
+      const viser_z = pos.z + start_z
+      const viser_y = -(a * viser_x + c * viser_z + d) / b
+
+      pos.y = viser_y - start_y
+      return;
+    });
+
+    dControls.addEventListener("dragend", () => {
+      if (!clickable) return;
+    });
+
+    dragControlsRef.current = dControls;
+    return () => dControls.dispose();
+  }, [obj, scene, camera, gl, clickable]);
+
+
   // Update attributes on a per-frame basis. Currently does redundant work,
   // although this shouldn't be a bottleneck.
   useFrame(
@@ -779,14 +824,11 @@ export function SceneNodeThreeObject(props: {
   if (!clickable && hovered) setHovered(false);
 
   const dragInfo = React.useRef({
-    isDragging: false,
-    start3D: null as THREE.Vector3 | null,
+    dragging: false,
+    startClientX: 0,
+    startClientY: 0,
   });
 
-  const groundPlane = React.useMemo(
-    () => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
-    []
-  );
 
   if (objNode === undefined || unmount) {
     return <>{children}</>;
@@ -807,62 +849,89 @@ export function SceneNodeThreeObject(props: {
           }}
         >
           <group
-            onPointerOver={(e) => {
-              e.stopPropagation();
-              // might do something with hover
-            }}
-            onPointerOut={(e) => {
-              e.stopPropagation();
-              // might do something with hover
-            }}
+            // Instead of using onClick, we use onPointerDown/Move/Up to check mouse drag,
+            // and only send a click if the mouse hasn't moved between the down and up events.
+            //  - onPointerDown resets the click state (dragged = false)
+            //  - onPointerMove, if triggered, sets dragged = true
+            //  - onPointerUp, if triggered, sends a click if dragged = false.
+            // Note: It would be cool to have dragged actions too...
             onPointerDown={(e) => {
+              if (!isDisplayed()) return;
               e.stopPropagation();
-              // 1) Mark dragging
-              dragInfo.current.isDragging = true;
-
-              // 2) Intersect the pointer's ray with our plane
-              const intersection = new THREE.Vector3();
-              e.ray.intersectPlane(groundPlane, intersection);
-
-              // 3) Store the intersection as "start3D"
-              dragInfo.current.start3D = intersection.clone();
+              const state = dragInfo.current;
+              const canvasBbox =
+                viewer.canvasRef.current!.getBoundingClientRect();
+              state.startClientX = e.clientX - canvasBbox.left;
+              state.startClientY = e.clientY - canvasBbox.top;
+              state.dragging = false;
             }}
             onPointerMove={(e) => {
-              if (!dragInfo.current.isDragging) return;
+              if (!isDisplayed()) return;
               e.stopPropagation();
-
-              // 1) Intersect the ray with the same plane
-              const intersection = new THREE.Vector3();
-              e.ray.intersectPlane(groundPlane, intersection);
-              console.log("intersection", intersection);
-
-              // 2) Delta in 3D
-              console.log("dragInfo.current.start3D", dragInfo.current.start3D);
-              if (!dragInfo.current.start3D) return;
-              const delta = intersection.clone().sub(dragInfo.current.start3D);
-
-              // If you only want to keep y=0, you can do delta.y=0, but
-              // since we used a y=0 plane, it’s already near 0 anyway.
-              // If you want to force it: delta.y = 0;
-
-              // 3) Move the group
-              // This group’s current position can be read from "props or ref"
-              // For simplicity, assume we have a group ref, or we do e.object:
-              e.object.position.add(delta);
-
-              // 4) Update start3D
-              dragInfo.current.start3D.copy(intersection);
+              const state = dragInfo.current;
+              const canvasBbox =
+                viewer.canvasRef.current!.getBoundingClientRect();
+              const deltaX = e.clientX - canvasBbox.left - state.startClientX;
+              const deltaY = e.clientY - canvasBbox.top - state.startClientY;
+              // Minimum motion.
+              if (Math.abs(deltaX) <= 3 && Math.abs(deltaY) <= 3) return;
+              state.dragging = true;
             }}
             onPointerUp={(e) => {
+              if (!isDisplayed()) return;
               e.stopPropagation();
-              dragInfo.current.isDragging = false;
-              dragInfo.current.start3D = null;
+              const state = dragInfo.current;
+              if (state.dragging) return;
+              // Convert ray to viser coordinates.
+              const ray = rayToViserCoords(viewer, e.ray);
+
+              // Send OpenCV image coordinates to the server (normalized).
+              const canvasBbox =
+                viewer.canvasRef.current!.getBoundingClientRect();
+              const mouseVectorOpenCV = opencvXyFromPointerXy(viewer, [
+                e.clientX - canvasBbox.left,
+                e.clientY - canvasBbox.top,
+              ]);
+
+              sendClicksThrottled({
+                type: "SceneNodeClickMessage",
+                name: props.name,
+                instance_index:
+                  computeClickInstanceIndexFromInstanceId === undefined
+                    ? null
+                    : computeClickInstanceIndexFromInstanceId(e.instanceId),
+                // Note that the threejs up is +Y, but we expose a +Z up.
+                ray_origin: [ray.origin.x, ray.origin.y, ray.origin.z],
+                ray_direction: [
+                  ray.direction.x,
+                  ray.direction.y,
+                  ray.direction.z,
+                ],
+                screen_pos: [mouseVectorOpenCV.x, mouseVectorOpenCV.y],
+              });
+              console.log(mouseVectorOpenCV.x, mouseVectorOpenCV.y, ray.origin.x, ray.origin.y, ray.origin.z)
+            }}
+            // 实际上以上的这些鼠标事件都可以注释掉，并且不影响物体拖动
+            onPointerOver={(e) => {
+              if (!isDisplayed()) return;
+              e.stopPropagation();
+              setHovered(true);
+              hoveredRef.current = true;
+            }}
+            onPointerOut={() => {
+              if (!isDisplayed()) return;
+              setHovered(false);
+              hoveredRef.current = false;
             }}
           >
-            <HoverableContext.Provider value={hoveredRef}>
-              {objNode}
-            </HoverableContext.Provider>
+            
+            {/* <HoverableContext.Provider value={hoveredRef}> 
+             这里这个hoverable context主要是控制物体高亮，但是和DragControl产生了冲突，在每次onPointerOut的时候物体都会产生位移，而我们onPointerOut函数并没有这个操作，所以目前先将这里进行注释，仅仅是少了物体高亮的特征
+            */}
+              {/* {objNode} */}
+            {/* </HoverableContext.Provider> */}
           </group>
+          {objNode}
           {children}
         </ErrorBoundary>
       </>
