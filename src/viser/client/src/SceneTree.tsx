@@ -2,39 +2,42 @@ import {
   CatmullRomLine,
   CubicBezierLine,
   Grid,
-  Line,
   PivotControls,
-  useCursor,
 } from "@react-three/drei";
 import { useContextBridge } from "its-fine";
 import { createPortal, useFrame } from "@react-three/fiber";
 import React from "react";
 import * as THREE from "three";
 
-import { ViewerContext } from "./App";
+import { ViewerContext } from "./ViewerContext";
 import {
   makeThrottledMessageSender,
   useThrottledMessageSender,
 } from "./WebsocketFunctions";
 import { Html } from "@react-three/drei";
 import { useSceneTreeState } from "./SceneTreeState";
-import { ErrorBoundary } from "react-error-boundary";
 import { rayToViserCoords } from "./WorldTransformUtils";
+import { HoverableContext, HoverState } from "./HoverContext";
 import {
   CameraFrustum,
   CoordinateFrame,
-  GlbAsset,
-  HoverableContext,
   InstancedAxes,
   PointCloud,
   ViserImage,
-  ViserMesh,
 } from "./ThreeAssets";
 import { opencvXyFromPointerXy } from "./ClickUtils";
 import { SceneNodeMessage } from "./WebsocketMessages";
 import { SplatObject } from "./Splatting/GaussianSplats";
 import { Paper } from "@mantine/core";
 import GeneratedGuiContainer from "./ControlPanel/Generated";
+import { Line } from "./Line";
+import { shadowArgs } from "./ShadowArgs";
+import { CsmDirectionalLight } from "./CsmDirectionalLight";
+import { BasicMesh } from "./mesh/BasicMesh";
+import { SkinnedMesh } from "./mesh/SkinnedMesh";
+import { BatchedMesh } from "./mesh/BatchedMesh";
+import { SingleGlbAsset } from "./mesh/SingleGlbAsset";
+import { BatchedGlbAsset } from "./mesh/BatchedGlbAsset";
 
 function rgbToInt(rgb: [number, number, number]): number {
   return (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
@@ -64,7 +67,7 @@ function SceneNodeThreeChildren(props: {
       if (
         newChildren === undefined ||
         newChildren === children || // Note that this won't check for elementwise equality!
-        (newChildren.length === 0 && children.length == 0)
+        (newChildren.length === 0 && children.length === 0)
       )
         return;
 
@@ -73,9 +76,11 @@ function SceneNodeThreeChildren(props: {
       setTimeout(
         () => {
           updateQueued = false;
-          const newChildren =
-            viewer.useSceneTree.getState().nodeFromName[props.name]!.children!;
-          setChildren(newChildren);
+          const node = viewer.useSceneTree.getState().nodeFromName[props.name];
+          if (node !== undefined) {
+            const newChildren = node.children!;
+            setChildren(newChildren);
+          }
         },
         // Throttle more when we have a lot of children...
         newChildren.length <= 16 ? 10 : newChildren.length <= 128 ? 50 : 200,
@@ -157,29 +162,10 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
     case "BatchedAxesMessage": {
       return {
         makeObject: (ref) => (
-          // Minor naming discrepancy: I think "batched" will be clearer to
-          // folks on the Python side, but instanced is somewhat more
-          // precise.
           <InstancedAxes
             ref={ref}
-            wxyzsBatched={
-              new Float32Array(
-                message.props.wxyzs_batched.buffer.slice(
-                  message.props.wxyzs_batched.byteOffset,
-                  message.props.wxyzs_batched.byteOffset +
-                    message.props.wxyzs_batched.byteLength,
-                ),
-              )
-            }
-            positionsBatched={
-              new Float32Array(
-                message.props.positions_batched.buffer.slice(
-                  message.props.positions_batched.byteOffset,
-                  message.props.positions_batched.byteOffset +
-                    message.props.positions_batched.byteLength,
-                ),
-              )
-            }
+            batched_wxyzs={message.props.batched_wxyzs}
+            batched_positions={message.props.batched_positions}
             axes_length={message.props.axes_length}
             axes_radius={message.props.axes_radius}
           />
@@ -192,6 +178,57 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
     }
 
     case "GridMessage": {
+      const gridQuaternion = new THREE.Quaternion().setFromEuler(
+        // There's redundancy here when we set the side to
+        // THREE.DoubleSide, where xy and yx should be the same.
+        //
+        // But it makes sense to keep this parameterization because
+        // specifying planes by xy seems more natural than the normal
+        // direction (z, +z, or -z), and it opens the possibility of
+        // rendering only FrontSide or BackSide grids in the future.
+        //
+        // If we add support for FrontSide or BackSide, we should
+        // double-check that the normal directions from each of these
+        // rotations match the right-hand rule!
+        message.props.plane == "xz"
+          ? new THREE.Euler(0.0, 0.0, 0.0)
+          : message.props.plane == "xy"
+            ? new THREE.Euler(Math.PI / 2.0, 0.0, 0.0)
+            : message.props.plane == "yx"
+              ? new THREE.Euler(0.0, Math.PI / 2.0, Math.PI / 2.0)
+              : message.props.plane == "yz"
+                ? new THREE.Euler(0.0, 0.0, Math.PI / 2.0)
+                : message.props.plane == "zx"
+                  ? new THREE.Euler(0.0, Math.PI / 2.0, 0.0)
+                  : //message.props.plane == "zy"
+                    new THREE.Euler(-Math.PI / 2.0, 0.0, -Math.PI / 2.0),
+      );
+
+      // When rotations are identity: plane is XY, while grid is XZ.
+      const planeQuaternion = new THREE.Quaternion()
+        .setFromEuler(new THREE.Euler(-Math.PI / 2, 0.0, 0.0))
+        .premultiply(gridQuaternion);
+
+      let shadowPlane;
+      if (message.props.shadow_opacity > 0.0) {
+        shadowPlane = (
+          <mesh
+            receiveShadow
+            position={[0.0, 0.0, -0.01]}
+            quaternion={planeQuaternion}
+          >
+            <planeGeometry args={[message.props.width, message.props.height]} />
+            <shadowMaterial
+              opacity={message.props.shadow_opacity}
+              color={0x000000}
+              depthWrite={false}
+            />
+          </mesh>
+        );
+      } else {
+        // when opacity = 0.0, no shadowPlane for performance
+        shadowPlane = <></>;
+      }
       return {
         makeObject: (ref) => (
           <group ref={ref}>
@@ -209,37 +246,9 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
               sectionColor={rgbToInt(message.props.section_color)}
               sectionThickness={message.props.section_thickness}
               sectionSize={message.props.section_size}
-              rotation={
-                // There's redundancy here when we set the side to
-                // THREE.DoubleSide, where xy and yx should be the same.
-                //
-                // But it makes sense to keep this parameterization because
-                // specifying planes by xy seems more natural than the normal
-                // direction (z, +z, or -z), and it opens the possibility of
-                // rendering only FrontSide or BackSide grids in the future.
-                //
-                // If we add support for FrontSide or BackSide, we should
-                // double-check that the normal directions from each of these
-                // rotations match the right-hand rule!
-                message.props.plane == "xz"
-                  ? new THREE.Euler(0.0, 0.0, 0.0)
-                  : message.props.plane == "xy"
-                    ? new THREE.Euler(Math.PI / 2.0, 0.0, 0.0)
-                    : message.props.plane == "yx"
-                      ? new THREE.Euler(0.0, Math.PI / 2.0, Math.PI / 2.0)
-                      : message.props.plane == "yz"
-                        ? new THREE.Euler(0.0, 0.0, Math.PI / 2.0)
-                        : message.props.plane == "zx"
-                          ? new THREE.Euler(0.0, Math.PI / 2.0, 0.0)
-                          : message.props.plane == "zy"
-                            ? new THREE.Euler(
-                                -Math.PI / 2.0,
-                                0.0,
-                                -Math.PI / 2.0,
-                              )
-                            : undefined
-              }
+              quaternion={gridQuaternion}
             />
+            {shadowPlane}
           </group>
         ),
       };
@@ -248,46 +257,34 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
     // Add a point cloud.
     case "PointCloudMessage": {
       return {
-        makeObject: (ref) => (
-          <PointCloud
-            ref={ref}
-            pointSize={message.props.point_size}
-            pointBallNorm={message.props.point_ball_norm}
-            points={
-              new Uint16Array( // (contains float16)
-                message.props.points.buffer.slice(
-                  message.props.points.byteOffset,
-                  message.props.points.byteOffset +
-                    message.props.points.byteLength,
-                ),
-              )
-            }
-            colors={new Uint8Array(message.props.colors)}
-          />
-        ),
+        makeObject: (ref) => <PointCloud ref={ref} {...message} />,
       };
     }
 
     // Add mesh
-    case "SkinnedMeshMessage":
+    case "SkinnedMeshMessage": {
+      return {
+        makeObject: (ref) => <SkinnedMesh ref={ref} {...message} />,
+      };
+    }
     case "MeshMessage": {
-      return { makeObject: (ref) => <ViserMesh ref={ref} {...message} /> };
+      return {
+        makeObject: (ref) => <BasicMesh ref={ref} {...message} />,
+      };
+    }
+    case "BatchedMeshesMessage": {
+      return {
+        makeObject: (ref) => <BatchedMesh ref={ref} {...message} />,
+        computeClickInstanceIndexFromInstanceId:
+          message.type === "BatchedMeshesMessage"
+            ? (instanceId) => instanceId!
+            : undefined,
+      };
     }
     // Add a camera frustum.
     case "CameraFrustumMessage": {
       return {
-        makeObject: (ref) => (
-          <CameraFrustum
-            ref={ref}
-            fov={message.props.fov}
-            aspect={message.props.aspect}
-            scale={message.props.scale}
-            lineWidth={message.props.line_width}
-            color={rgbToInt(message.props.color)}
-            imageBinary={message.props.image_binary}
-            imageMediaType={message.props.image_media_type}
-          />
-        ),
+        makeObject: (ref) => <CameraFrustum ref={ref} {...message} />,
       };
     }
     case "TransformControlsMessage": {
@@ -301,7 +298,6 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
               scale={message.props.scale}
               lineWidth={message.props.line_width}
               fixed={message.props.fixed}
-              autoTransform={message.props.auto_transform}
               activeAxes={message.props.active_axes}
               disableAxes={message.props.disable_axes}
               disableSliders={message.props.disable_sliders}
@@ -312,7 +308,7 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
               depthTest={message.props.depth_test}
               opacity={message.props.opacity}
               onDrag={(l) => {
-                const attrs = viewer.nodeAttributesFromName.current;
+                const attrs = viewer.mutable.current.nodeAttributesFromName;
                 if (attrs[message.name] === undefined) {
                   attrs[message.name] = {};
                 }
@@ -412,13 +408,13 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
     // Add a glTF/GLB asset.
     case "GlbMessage": {
       return {
-        makeObject: (ref) => (
-          <GlbAsset
-            ref={ref}
-            glb_data={new Uint8Array(message.props.glb_data)}
-            scale={message.props.scale}
-          />
-        ),
+        makeObject: (ref) => <SingleGlbAsset ref={ref} {...message} />,
+      };
+    }
+    case "BatchedGlbMessage": {
+      return {
+        makeObject: (ref) => <BatchedGlbAsset ref={ref} {...message} />,
+        computeClickInstanceIndexFromInstanceId: (instanceId) => instanceId!,
       };
     }
     case "LineSegmentsMessage": {
@@ -442,24 +438,9 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
           return (
             <group ref={ref}>
               <Line
-                points={Array.from(
-                  { length: pointsArray.length / 3 },
-                  (_, i) => [
-                    pointsArray[i * 3],
-                    pointsArray[i * 3 + 1],
-                    pointsArray[i * 3 + 2],
-                  ],
-                )}
-                color="white"
+                points={pointsArray}
                 lineWidth={message.props.line_width}
-                vertexColors={Array.from(
-                  { length: colorArray.length / 3 },
-                  (_, i) => [
-                    colorArray[i * 3] / 255,
-                    colorArray[i * 3 + 1] / 255,
-                    colorArray[i * 3 + 2] / 255,
-                  ],
-                )}
+                vertexColors={colorArray}
                 segments={true}
               />
             </group>
@@ -531,16 +512,22 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
     case "DirectionalLightMessage": {
       return {
         makeObject: (ref) => (
-          <directionalLight
-            ref={ref}
-            intensity={message.props.intensity}
-            color={rgbToInt(message.props.color)}
-          />
+          <group ref={ref}>
+            <CsmDirectionalLight
+              lightIntensity={message.props.intensity}
+              color={rgbToInt(message.props.color)}
+              castShadow={message.props.cast_shadow}
+            />
+          </group>
         ),
+        // CsmDirectionalLight is not influenced by visibility, since the
+        // lights it adds are portaled to the scene root.
+        unmountWhenInvisible: true,
       };
     }
 
     // Add an ambient light
+    // Cannot cast shadows
     case "AmbientLightMessage": {
       return {
         makeObject: (ref) => (
@@ -554,6 +541,7 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
     }
 
     // Add a hemisphere light
+    // Cannot cast shadows
     case "HemisphereLightMessage": {
       return {
         makeObject: (ref) => (
@@ -577,11 +565,14 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
             color={rgbToInt(message.props.color)}
             distance={message.props.distance}
             decay={message.props.decay}
+            castShadow={message.props.cast_shadow}
+            {...shadowArgs}
           />
         ),
       };
     }
     // Add a rectangular area light
+    // Cannot cast shadows
     case "RectAreaLightMessage": {
       return {
         makeObject: (ref) => (
@@ -608,6 +599,8 @@ function useObjectFactory(message: SceneNodeMessage | undefined): {
             angle={message.props.angle}
             penumbra={message.props.penumbra}
             decay={message.props.decay}
+            castShadow={message.props.cast_shadow}
+            {...shadowArgs}
           />
         ),
       };
@@ -639,10 +632,13 @@ export function SceneNodeThreeObject(props: {
     false;
   const [obj, setRef] = React.useState<THREE.Object3D | null>(null);
 
+  // Get viewer mutable once
+  const viewerMutable = viewer.mutable.current;
+
   // Update global registry of node objects.
   // This is used for updating bone transforms in skinned meshes.
   React.useEffect(() => {
-    if (obj !== null) viewer.nodeRefFromName.current[props.name] = obj;
+    if (obj !== null) viewerMutable.nodeRefFromName[props.name] = obj;
   }, [obj]);
 
   // Create object + children.
@@ -654,7 +650,7 @@ export function SceneNodeThreeObject(props: {
     if (makeObject === undefined) return null;
 
     // Pose will need to be updated.
-    const attrs = viewer.nodeAttributesFromName.current;
+    const attrs = viewerMutable.nodeAttributesFromName;
     if (!(props.name in attrs)) {
       attrs[props.name] = {};
     }
@@ -675,7 +671,7 @@ export function SceneNodeThreeObject(props: {
   function isDisplayed() {
     // We avoid checking obj.visible because obj may be unmounted when
     // unmountWhenInvisible=true.
-    const attrs = viewer.nodeAttributesFromName.current[props.name];
+    const attrs = viewerMutable.nodeAttributesFromName[props.name];
     const visibility =
       (attrs?.overrideVisibility === undefined
         ? attrs?.visibility
@@ -695,7 +691,7 @@ export function SceneNodeThreeObject(props: {
 
   // Pose needs to be updated whenever component is remounted.
   React.useEffect(() => {
-    const attrs = viewer.nodeAttributesFromName.current[props.name];
+    const attrs = viewerMutable.nodeAttributesFromName[props.name];
     if (attrs !== undefined) attrs.poseUpdateState = "needsUpdate";
   });
 
@@ -703,7 +699,7 @@ export function SceneNodeThreeObject(props: {
   // although this shouldn't be a bottleneck.
   useFrame(
     () => {
-      const attrs = viewer.nodeAttributesFromName.current[props.name];
+      const attrs = viewerMutable.nodeAttributesFromName[props.name];
 
       // Unmount when invisible.
       // Examples: <Html /> components, PivotControls.
@@ -735,14 +731,10 @@ export function SceneNodeThreeObject(props: {
 
       if (attrs.poseUpdateState == "needsUpdate") {
         attrs.poseUpdateState = "updated";
-        const wxyz = attrs.wxyz;
-        if (wxyz !== undefined) {
-          obj.quaternion.set(wxyz[1], wxyz[2], wxyz[3], wxyz[0]);
-        }
-        const position = attrs.position;
-        if (position !== undefined) {
-          obj.position.set(position[0], position[1], position[2]);
-        }
+        const wxyz = attrs.wxyz ?? [1, 0, 0, 0];
+        obj.quaternion.set(wxyz[1], wxyz[2], wxyz[3], wxyz[0]);
+        const position = attrs.position ?? [0, 0, 0];
+        obj.position.set(position[0], position[1], position[2]);
 
         // Update matrices if necessary. This is necessary for PivotControls.
         if (!obj.matrixAutoUpdate) obj.updateMatrix();
@@ -760,10 +752,23 @@ export function SceneNodeThreeObject(props: {
 
   // Clicking logic.
   const sendClicksThrottled = useThrottledMessageSender(50);
-  const [hovered, setHovered] = React.useState(false);
-  useCursor(hovered);
-  const hoveredRef = React.useRef(false);
-  if (!clickable && hovered) setHovered(false);
+
+  // Track hover state.
+  const hoveredRef = React.useRef<HoverState>({
+    isHovered: false,
+    instanceId: null,
+    clickable: false,
+  });
+  hoveredRef.current.clickable = clickable;
+
+  // Handle case where clickable is toggled to false while still hovered.
+  if (!clickable && hoveredRef.current.isHovered) {
+    hoveredRef.current.isHovered = false;
+    viewerMutable.hoveredElementsCount--;
+    if (viewerMutable.hoveredElementsCount === 0) {
+      document.body.style.cursor = "auto";
+    }
+  }
 
   const dragInfo = React.useRef({
     dragging: false,
@@ -772,111 +777,128 @@ export function SceneNodeThreeObject(props: {
   });
 
   if (objNode === undefined || unmount) {
-    return <>{children}</>;
-  } else if (clickable) {
-    return (
-      <>
-        <ErrorBoundary
-          fallbackRender={() => {
-            // This sometimes (but very rarely) catches a race condition when
-            // we remove scene nodes. I would guess it's related to portaling,
-            // but the issue is unnoticeable with ErrorBoundary in-place so not
-            // debugging further for now...
-            console.error(
-              "There was an error rendering a scene node object:",
-              objNode,
-            );
-            return null;
-          }}
-        >
-          <group
-            // Instead of using onClick, we use onPointerDown/Move/Up to check mouse drag,
-            // and only send a click if the mouse hasn't moved between the down and up events.
-            //  - onPointerDown resets the click state (dragged = false)
-            //  - onPointerMove, if triggered, sets dragged = true
-            //  - onPointerUp, if triggered, sends a click if dragged = false.
-            // Note: It would be cool to have dragged actions too...
-            onPointerDown={(e) => {
-              if (!isDisplayed()) return;
-              e.stopPropagation();
-              const state = dragInfo.current;
-              const canvasBbox =
-                viewer.canvasRef.current!.getBoundingClientRect();
-              state.startClientX = e.clientX - canvasBbox.left;
-              state.startClientY = e.clientY - canvasBbox.top;
-              state.dragging = false;
-            }}
-            onPointerMove={(e) => {
-              if (!isDisplayed()) return;
-              e.stopPropagation();
-              const state = dragInfo.current;
-              const canvasBbox =
-                viewer.canvasRef.current!.getBoundingClientRect();
-              const deltaX = e.clientX - canvasBbox.left - state.startClientX;
-              const deltaY = e.clientY - canvasBbox.top - state.startClientY;
-              // Minimum motion.
-              if (Math.abs(deltaX) <= 3 && Math.abs(deltaY) <= 3) return;
-              state.dragging = true;
-            }}
-            onPointerUp={(e) => {
-              if (!isDisplayed()) return;
-              e.stopPropagation();
-              const state = dragInfo.current;
-              if (state.dragging) return;
-              // Convert ray to viser coordinates.
-              const ray = rayToViserCoords(viewer, e.ray);
-
-              // Send OpenCV image coordinates to the server (normalized).
-              const canvasBbox =
-                viewer.canvasRef.current!.getBoundingClientRect();
-              const mouseVectorOpenCV = opencvXyFromPointerXy(viewer, [
-                e.clientX - canvasBbox.left,
-                e.clientY - canvasBbox.top,
-              ]);
-
-              sendClicksThrottled({
-                type: "SceneNodeClickMessage",
-                name: props.name,
-                instance_index:
-                  computeClickInstanceIndexFromInstanceId === undefined
-                    ? null
-                    : computeClickInstanceIndexFromInstanceId(e.instanceId),
-                // Note that the threejs up is +Y, but we expose a +Z up.
-                ray_origin: [ray.origin.x, ray.origin.y, ray.origin.z],
-                ray_direction: [
-                  ray.direction.x,
-                  ray.direction.y,
-                  ray.direction.z,
-                ],
-                screen_pos: [mouseVectorOpenCV.x, mouseVectorOpenCV.y],
-              });
-            }}
-            onPointerOver={(e) => {
-              if (!isDisplayed()) return;
-              e.stopPropagation();
-              setHovered(true);
-              hoveredRef.current = true;
-            }}
-            onPointerOut={() => {
-              if (!isDisplayed()) return;
-              setHovered(false);
-              hoveredRef.current = false;
-            }}
-          >
-            <HoverableContext.Provider value={hoveredRef}>
-              {objNode}
-            </HoverableContext.Provider>
-          </group>
-          {children}
-        </ErrorBoundary>
-      </>
-    );
+    return null;
   } else {
     return (
       <>
-        {/* This <group /> does nothing, but switching between clickable vs not
-        causes strange transform behavior without it. */}
-        <group>{objNode}</group>
+        <group
+          // Instead of using onClick, we use onPointerDown/Move/Up to check mouse drag,
+          // and only send a click if the mouse hasn't moved between the down and up events.
+          //  - onPointerDown resets the click state (dragged = false)
+          //  - onPointerMove, if triggered, sets dragged = true
+          //  - onPointerUp, if triggered, sends a click if dragged = false.
+          // Note: It would be cool to have dragged actions too...
+          onPointerDown={
+            !clickable
+              ? undefined
+              : (e) => {
+                  if (!isDisplayed()) return;
+                  e.stopPropagation();
+                  const state = dragInfo.current;
+                  const canvasBbox =
+                    viewerMutable.canvas!.getBoundingClientRect();
+                  state.startClientX = e.clientX - canvasBbox.left;
+                  state.startClientY = e.clientY - canvasBbox.top;
+                  state.dragging = false;
+                }
+          }
+          onPointerMove={
+            !clickable
+              ? undefined
+              : (e) => {
+                  if (!isDisplayed()) return;
+                  e.stopPropagation();
+                  const state = dragInfo.current;
+                  const canvasBbox =
+                    viewerMutable.canvas!.getBoundingClientRect();
+                  const deltaX =
+                    e.clientX - canvasBbox.left - state.startClientX;
+                  const deltaY =
+                    e.clientY - canvasBbox.top - state.startClientY;
+                  // Minimum motion.
+                  if (Math.abs(deltaX) <= 3 && Math.abs(deltaY) <= 3) return;
+                  state.dragging = true;
+                }
+          }
+          onPointerUp={
+            !clickable
+              ? undefined
+              : (e) => {
+                  if (!isDisplayed()) return;
+                  e.stopPropagation();
+                  const state = dragInfo.current;
+                  if (state.dragging) return;
+                  // Convert ray to viser coordinates.
+                  const ray = rayToViserCoords(viewer, e.ray);
+
+                  // Send OpenCV image coordinates to the server (normalized).
+                  const canvasBbox =
+                    viewerMutable.canvas!.getBoundingClientRect();
+                  const mouseVectorOpenCV = opencvXyFromPointerXy(viewer, [
+                    e.clientX - canvasBbox.left,
+                    e.clientY - canvasBbox.top,
+                  ]);
+
+                  sendClicksThrottled({
+                    type: "SceneNodeClickMessage",
+                    name: props.name,
+                    instance_index:
+                      computeClickInstanceIndexFromInstanceId === undefined
+                        ? null
+                        : computeClickInstanceIndexFromInstanceId(e.instanceId),
+                    // Note that the threejs up is +Y, but we expose a +Z up.
+                    ray_origin: [ray.origin.x, ray.origin.y, ray.origin.z],
+                    ray_direction: [
+                      ray.direction.x,
+                      ray.direction.y,
+                      ray.direction.z,
+                    ],
+                    screen_pos: [mouseVectorOpenCV.x, mouseVectorOpenCV.y],
+                  });
+                }
+          }
+          onPointerOver={
+            !clickable
+              ? undefined
+              : (e) => {
+                  if (!isDisplayed()) return;
+                  e.stopPropagation();
+
+                  // Update hover state
+                  hoveredRef.current.isHovered = true;
+                  // Store the instanceId in the hover ref
+                  hoveredRef.current.instanceId = e.instanceId ?? null;
+
+                  // Increment global hover count and update cursor
+                  viewerMutable.hoveredElementsCount++;
+                  if (viewerMutable.hoveredElementsCount === 1) {
+                    document.body.style.cursor = "pointer";
+                  }
+                }
+          }
+          onPointerOut={
+            !clickable
+              ? undefined
+              : () => {
+                  if (!isDisplayed()) return;
+
+                  // Update hover state
+                  hoveredRef.current.isHovered = false;
+                  // Clear the instanceId when no longer hovering
+                  hoveredRef.current.instanceId = null;
+
+                  // Decrement global hover count and update cursor if needed
+                  viewerMutable.hoveredElementsCount--;
+                  if (viewerMutable.hoveredElementsCount === 0) {
+                    document.body.style.cursor = "auto";
+                  }
+                }
+          }
+        >
+          <HoverableContext.Provider value={hoveredRef}>
+            {objNode}
+          </HoverableContext.Provider>
+        </group>
         {children}
       </>
     );

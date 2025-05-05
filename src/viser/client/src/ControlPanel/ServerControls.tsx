@@ -1,12 +1,14 @@
-import { ViewerContext } from "../App";
+import { ViewerContext } from "../ViewerContext";
 import {
   Box,
   Button,
+  Checkbox,
   Divider,
+  Group,
   Stack,
-  Switch,
   Text,
   TextInput,
+  Tooltip,
 } from "@mantine/core";
 import { IconHomeMove, IconPhoto } from "@tabler/icons-react";
 import { Stats } from "@react-three/drei";
@@ -17,6 +19,7 @@ const MemoizedTable = React.memo(SceneTreeTable);
 
 export default function ServerControls() {
   const viewer = React.useContext(ViewerContext)!;
+  const viewerMutable = viewer.mutable.current; // Get mutable once
   const [showStats, setShowStats] = React.useState(false);
 
   function triggerBlur(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -44,22 +47,6 @@ export default function ServerControls() {
             },
           }}
         />
-        <TextInput
-          label="Label"
-          defaultValue={viewer.useGui((state) => state.label)}
-          onBlur={(event) =>
-            viewer.useGui.setState({ label: event.currentTarget.value })
-          }
-          onKeyDown={triggerBlur}
-          styles={{
-            input: {
-              minHeight: "1.75rem",
-              height: "1.75rem",
-              padding: "0 0.5em",
-            },
-          }}
-          mb="0.375em"
-        />
         <Button
           onClick={async () => {
             const supportsFileSystemAccess =
@@ -82,7 +69,7 @@ export default function ServerControls() {
                   },
                 ],
               });
-              viewer.canvasRef.current?.toBlob(async (blob) => {
+              viewerMutable.canvas?.toBlob(async (blob) => {
                 if (blob === null) {
                   console.error("Export failed");
                   return;
@@ -95,7 +82,7 @@ export default function ServerControls() {
               });
             } else {
               // File System Access API is not supported. (eg Firefox)
-              viewer.canvasRef.current?.toBlob((blob) => {
+              viewerMutable.canvas?.toBlob((blob) => {
                 if (blob === null) {
                   console.error("Export failed");
                   return;
@@ -122,7 +109,7 @@ export default function ServerControls() {
         </Button>
         <Button
           onClick={() => {
-            viewer.resetCameraViewRef.current!();
+            viewerMutable.resetCameraView!();
           }}
           fullWidth
           leftSection={<IconHomeMove size="1rem" />}
@@ -130,14 +117,55 @@ export default function ServerControls() {
         >
           Reset View
         </Button>
-        <Switch
-          radius="sm"
-          label="WebGL Statistics"
-          onChange={(event) => {
-            setShowStats(event.currentTarget.checked);
-          }}
-          size="sm"
-        />
+        <Group>
+          <Tooltip
+            label={
+              <>
+                Show tool for setting the look-at point and
+                <br />
+                up direction of the camera.
+                <br />
+                <br />
+                This can be used to set the origin of the
+                <br />
+                camera&apos;s orbit controls.
+              </>
+            }
+            refProp="rootRef"
+            position="top-start"
+          >
+            <Checkbox
+              radius="xs"
+              label="Orbit Origin Tool"
+              onChange={(event) => {
+                viewer.useGui.setState({
+                  showOrbitOriginTool: event.currentTarget.checked,
+                });
+              }}
+              styles={{
+                label: { paddingLeft: "8px", letterSpacing: "-0.3px" },
+              }}
+              size="sm"
+            />
+          </Tooltip>
+          <Tooltip
+            label={"Show WebGL statistics."}
+            refProp="rootRef"
+            position="top-start"
+          >
+            <Checkbox
+              radius="xs"
+              label="WebGL Stats"
+              onChange={(event) => {
+                setShowStats(event.currentTarget.checked);
+              }}
+              styles={{
+                label: { paddingLeft: "8px", letterSpacing: "-0.3px" },
+              }}
+              size="sm"
+            />
+          </Tooltip>
+        </Group>
         <Divider mt="xs" />
         <Box>
           <Text mb="0.2em" fw={500} fz="sm">

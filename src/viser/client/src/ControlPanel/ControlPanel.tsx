@@ -1,6 +1,6 @@
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
 import GeneratedGuiContainer from "./Generated";
-import { ViewerContext } from "../App";
+import { ViewerContext } from "../ViewerContext";
 
 import QRCode from "react-qr-code";
 import ServerControls from "./ServerControls";
@@ -83,7 +83,7 @@ export default function ControlPanel(props: {
     >
       <Tooltip
         zIndex={100}
-        label={showSettings ? "Return to GUI" : "Connection & diagnostics"}
+        label={showSettings ? "Return to GUI" : "Configuration & diagnostics"}
         withinPortal
       >
         {showSettings ? (
@@ -193,6 +193,7 @@ function ConnectionStatus() {
 
 function ShareButton() {
   const viewer = React.useContext(ViewerContext)!;
+  const viewerMutable = viewer.mutable.current; // Get mutable once
   const connected = viewer.useGui((state) => state.websocketConnected);
   const shareUrl = viewer.useGui((state) => state.shareUrl);
   const setShareUrl = viewer.useGui((state) => state.setShareUrl);
@@ -214,10 +215,11 @@ function ShareButton() {
     if (!connected && shareModalOpened) closeShareModal();
   }, [connected, shareModalOpened]);
 
+  const colorScheme = useMantineColorScheme().colorScheme;
+
   if (viewer.useGui((state) => state.theme).show_share_button === false)
     return null;
 
-  const colorScheme = useMantineColorScheme().colorScheme;
   return (
     <>
       <Tooltip
@@ -271,7 +273,7 @@ function ShareButton() {
                 <Button
                   fullWidth
                   onClick={() => {
-                    viewer.sendMessageRef.current({
+                    viewerMutable.sendMessage({
                       type: "ShareUrlRequest",
                     });
                     setDoingSomething(true); // Loader state will help with debouncing.
@@ -317,7 +319,7 @@ function ShareButton() {
                   <Button
                     color="red"
                     onClick={() => {
-                      viewer.sendMessageRef.current({
+                      viewerMutable.sendMessage({
                         type: "ShareUrlDisconnect",
                       });
                       setShareUrl(null);

@@ -17,7 +17,7 @@ import {
 } from "./SceneTreeTable.css";
 import { useDisclosure } from "@mantine/hooks";
 import { useForm } from "@mantine/form";
-import { ViewerContext } from "../App";
+import { ViewerContext } from "../ViewerContext";
 import {
   Box,
   Flex,
@@ -271,24 +271,92 @@ export default function SceneTreeTable() {
   );
   return (
     <ScrollArea className={tableWrapper}>
-      {childrenName.map((name) => (
-        <SceneTreeTableRow
-          nodeName={name}
-          key={name}
-          isParentVisible={true}
-          indentCount={0}
-        />
-      ))}
+      <VisibilityPaintProvider>
+        {childrenName.map((name) => (
+          <SceneTreeTableRow
+            nodeName={name}
+            key={name}
+            isParentVisible={true}
+            indentCount={0}
+          />
+        ))}
+      </VisibilityPaintProvider>
     </ScrollArea>
   );
 }
 
+const VisibilityPaintContext = React.createContext<{
+  paintingRef: React.MutableRefObject<boolean>;
+  paintValueRef: React.MutableRefObject<boolean>;
+  startPainting: (value: boolean) => void;
+  stopPainting: () => void;
+} | null>(null);
+
+export function VisibilityPaintProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const paintingRef = React.useRef(false);
+  const paintValueRef = React.useRef(false);
+
+  const startPainting = React.useCallback((value: boolean) => {
+    paintingRef.current = true;
+    paintValueRef.current = value;
+  }, []);
+
+  const stopPainting = React.useCallback(() => {
+    paintingRef.current = false;
+  }, []);
+
+  React.useEffect(() => {
+    window.addEventListener("mouseup", stopPainting);
+    return () => {
+      window.removeEventListener("mouseup", stopPainting);
+    };
+  }, [stopPainting]);
+
+  return (
+    <VisibilityPaintContext.Provider
+      value={{ paintingRef, paintValueRef, startPainting, stopPainting }}
+    >
+      {children}
+    </VisibilityPaintContext.Provider>
+  );
+}
+
+// Modified SceneTreeTableRow
 const SceneTreeTableRow = React.memo(function SceneTreeTableRow(props: {
   nodeName: string;
   isParentVisible: boolean;
   indentCount: number;
 }) {
   const viewer = React.useContext(ViewerContext)!;
+  const viewerMutable = viewer.mutable.current; // Get mutable once
+  const { paintingRef, paintValueRef, startPainting } = React.useContext(
+    VisibilityPaintContext,
+  )!;
+
+  const handleVisibilityMouseDown = (evt: React.MouseEvent) => {
+    evt.stopPropagation();
+    const newValue = !isVisible;
+    startPainting(newValue);
+
+    // Update visibility
+    const attr = viewerMutable.nodeAttributesFromName;
+    attr[props.nodeName]!.overrideVisibility = newValue;
+    setIsVisible(newValue);
+  };
+
+  const handleVisibilityMouseEnter = () => {
+    if (!paintingRef.current) return;
+
+    // Update visibility to match paint value
+    const attr = viewerMutable.nodeAttributesFromName;
+    attr[props.nodeName]!.overrideVisibility = paintValueRef.current;
+    setIsVisible(paintValueRef.current);
+  };
+
   const childrenName = viewer.useSceneTree(
     (state) => state.nodeFromName[props.nodeName]!.children,
   );
@@ -301,7 +369,7 @@ const SceneTreeTableRow = React.memo(function SceneTreeTableRow(props: {
   );
 
   const pollIsVisible = React.useCallback(() => {
-    const attrs = viewer.nodeAttributesFromName.current[props.nodeName];
+    const attrs = viewerMutable.nodeAttributesFromName[props.nodeName];
     return (
       (attrs?.overrideVisibility === undefined
         ? attrs?.visibility
@@ -310,6 +378,13 @@ const SceneTreeTableRow = React.memo(function SceneTreeTableRow(props: {
   }, [props.nodeName]);
 
   const [isVisible, setIsVisible] = React.useState(pollIsVisible());
+
+  // Ensure label visibility is cleaned up when component unmounts
+  React.useEffect(() => {
+    return () => {
+      setLabelVisibility(props.nodeName, false);
+    };
+  });
   React.useEffect(() => {
     // We put the visibility in a ref, so it needs to be polled. This was for
     // performance reasons, but we should probably move it into the zustand
@@ -340,8 +415,8 @@ const SceneTreeTableRow = React.memo(function SceneTreeTableRow(props: {
           cursor: expandable ? "pointer" : undefined,
         }}
         onClick={expandable ? toggleExpanded : undefined}
-        onMouseOver={() => setLabelVisibility(props.nodeName, true)}
-        onMouseOut={() => setLabelVisibility(props.nodeName, false)}
+        onMouseEnter={() => setLabelVisibility(props.nodeName, true)}
+        onMouseLeave={() => setLabelVisibility(props.nodeName, false)}
       >
         {new Array(props.indentCount).fill(null).map((_, i) => (
           <Box className={tableHierarchyLine} key={i} />
@@ -370,25 +445,19 @@ const SceneTreeTableRow = React.memo(function SceneTreeTableRow(props: {
           )}
         </Box>
         <Box style={{ width: "1.5em", height: "1.5em" }}>
-          <Tooltip label="Override visibility">
-            <VisibleIcon
-              style={{
-                cursor: "pointer",
-                opacity: isVisibleEffective ? 0.85 : 0.25,
-                width: "1.5em",
-                height: "1.5em",
-                display: "block",
-              }}
-              onClick={(evt) => {
-                evt.stopPropagation();
-                const attr = viewer.nodeAttributesFromName.current;
-                attr[props.nodeName]!.overrideVisibility = !isVisible;
-                setIsVisible(!isVisible);
-              }}
-            />
-          </Tooltip>
+          <VisibleIcon
+            style={{
+              cursor: "pointer",
+              opacity: isVisibleEffective ? 0.85 : 0.25,
+              width: "1.5em",
+              height: "1.5em",
+              display: "block",
+            }}
+            onMouseDown={handleVisibilityMouseDown}
+            onMouseEnter={handleVisibilityMouseEnter}
+          />
         </Box>
-        <Box style={{ flexGrow: "1" }}>
+        <Box style={{ flexGrow: "1", userSelect: "none" }}>
           <span style={{ opacity: "0.3" }}>/</span>
           {props.nodeName.split("/").at(-1)}
         </Box>

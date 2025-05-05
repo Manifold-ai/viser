@@ -24,6 +24,9 @@ from typing_extensions import Literal, assert_never, override
 from websockets import Headers
 from websockets.asyncio.server import ServerConnection
 from websockets.http11 import Request, Response
+from websockets.typing import Subprotocol
+
+import viser  # Import for version checking
 
 from ._async_message_buffer import AsyncMessageBuffer
 from ._messages import Message
@@ -41,46 +44,52 @@ ClientId = NewType("ClientId", int)
 TMessage = TypeVar("TMessage", bound=Message)
 
 
-class RecordHandle:
-    """**Experimental.**
-
-    Handle for recording outgoing messages. Useful for logging + debugging."""
+class StateSerializer:
+    """Handle for serializing messages. In Viser, this is used to save the
+    scene state so it can be shared/embedded in static webpages."""
 
     def __init__(
         self, handler: WebsockMessageHandler, filter: Callable[[Message], bool]
     ):
         self._handler = handler
         self._filter = filter
-        self._loop_start_index: int | None = None
         self._time: float = 0.0
         self._messages: list[tuple[float, dict[str, Any]]] = []
 
     def _insert_message(self, message: Message) -> None:
         """Insert a message into the recorded file."""
 
-        # Exclude GUI messages. This is hacky.
+        # Exclude messages that are filtered out. In Viser, this is typically
+        # GUI messages.
         if not self._filter(message):
             return
         self._messages.append((self._time, message.as_serializable_dict()))
 
     def insert_sleep(self, duration: float) -> None:
-        """Insert a sleep into the recorded file."""
+        """Insert a sleep into the recorded file. This can be useful for
+        dynamic 3D data."""
+        assert self._handler._record_handle is not None, (
+            "serialize() was already called!"
+        )
         self._time += duration
 
-    def set_loop_start(self) -> None:
-        """Mark the start of the loop. Messages sent after this point will be
-        looped. Should only be called once."""
-        assert self._loop_start_index is None, "Loop start already set."
-        self._loop_start_index = len(self._messages)
+    def serialize(self) -> bytes:
+        """Serialize saved messages. Should only be called once. Our convention
+        is to write this binary format to a file with a ``.viser`` extension,
+        for example via ``pathlib.Path("file.viser").write_bytes(...)``.
 
-    def end_and_serialize(self) -> bytes:
-        """End the recording and serialize contents. Returns the recording as
-        bytes, which should generally be written to a file."""
+        Returns:
+            The recording as bytes.
+        """
+        assert self._handler._record_handle is not None, (
+            "serialize() was already called!"
+        )
+
         packed_bytes = msgspec.msgpack.encode(
             {
-                "loopStartIndex": self._loop_start_index,
                 "durationSeconds": self._time,
                 "messages": self._messages,
+                "viserVersion": viser.__version__,
             }
         )
         assert isinstance(packed_bytes, bytes)
@@ -99,13 +108,15 @@ class WebsockMessageHandler:
         self._locked_thread_id = -1
 
         # Set to None if not recording.
-        self._record_handle: RecordHandle | None = None
+        self._record_handle: StateSerializer | None = None
 
-    def start_recording(self, filter: Callable[[Message], bool]) -> RecordHandle:
+    def get_message_serializer(
+        self, filter: Callable[[Message], bool]
+    ) -> StateSerializer:
         """Start recording messages that are sent. Sent messages will be
         serialized and can be used for playback."""
         assert self._record_handle is None, "Already recording."
-        self._record_handle = RecordHandle(self, filter)
+        self._record_handle = StateSerializer(self, filter)
         return self._record_handle
 
     def register_handler(
@@ -124,9 +135,9 @@ class WebsockMessageHandler:
         callback: Callable[[ClientId, TMessage], None | Coroutine] | None = None,
     ):
         """Unregister a handler for a particular message type."""
-        assert (
-            message_cls in self._incoming_handlers
-        ), "Tried to unregister a handler that hasn't been registered."
+        assert message_cls in self._incoming_handlers, (
+            "Tried to unregister a handler that hasn't been registered."
+        )
         if callback is None:
             self._incoming_handlers.pop(message_cls)
         else:
@@ -290,7 +301,10 @@ class WebsockServer(WebsockMessageHandler):
     def flush_client(self, client_id: int) -> None:
         """Flush the outgoing message buffer for a particular client. Any buffered
         messages will immediately be sent. (by default they are windowed)"""
-        self._client_state_from_id[client_id].message_buffer.flush()
+        # No-op if client is disconnected.
+        client_state = self._client_state_from_id.get(client_id)
+        if client_state is not None:
+            client_state.message_buffer.flush()
 
     def _background_worker(self, ready_sem: threading.Semaphore) -> None:
         host = self._host
@@ -323,13 +337,26 @@ class WebsockServer(WebsockMessageHandler):
                 nonlocal total_connections
                 total_connections += 1
 
-            if self._verbose:
-                rich.print(
-                    f"[bold](viser)[/bold] Connection opened ({client_id},"
-                    f" {total_connections} total),"
-                    f" {len(self._broadcast_buffer.message_from_id)} persistent"
-                    " messages"
-                )
+            # Version check to make sure Viser server/client match.
+            if self._client_api_version == 1:
+                import viser
+
+                # Extract client version from the selected subprotocol.
+                client_version_str = "unknown"
+                if connection.subprotocol is not None:
+                    if connection.subprotocol.startswith("viser-v"):
+                        client_version_str = connection.subprotocol[7:].strip()
+
+                if client_version_str != viser.__version__:
+                    rich.print(
+                        f"[bold red](viser)[/bold red] Version mismatch - connection rejected. "
+                        f"Client: '{client_version_str}', Server: '{viser.__version__}'"
+                    )
+                    await connection.close(
+                        1002,
+                        f"Version mismatch. Client: {client_version_str}, Server: {viser.__version__}",
+                    )
+                    return  # Exit handler to prevent further processing.
 
             client_state = _ClientHandleState(
                 AsyncMessageBuffer(event_loop, persistent_messages=False),
@@ -352,6 +379,14 @@ class WebsockServer(WebsockMessageHandler):
                     await cb(client_connection)
                 else:
                     cb(client_connection)
+
+            if self._verbose:
+                rich.print(
+                    f"[bold](viser)[/bold] Connection opened ({client_id},"
+                    f" {total_connections} total),"
+                    f" {len(self._broadcast_buffer.message_from_id)} persistent"
+                    " messages"
+                )
 
             try:
                 # For each client: infinite loop over producers (which send messages)
@@ -468,13 +503,9 @@ class WebsockServer(WebsockMessageHandler):
             if mime_type is None:
                 mime_type = "application/octet-stream"
 
-            response_headers = {
-                "Content-Type": mime_type,
-            }
             if source_path not in file_cache:
                 file_cache[source_path] = source_path.read_bytes()
             if use_gzip:
-                response_headers["Content-Encoding"] = "gzip"
                 if source_path not in file_cache_gzipped:
                     file_cache_gzipped[source_path] = gzip.compress(
                         file_cache[source_path]
@@ -482,6 +513,12 @@ class WebsockServer(WebsockMessageHandler):
                 response_payload = file_cache_gzipped[source_path]
             else:
                 response_payload = file_cache[source_path]
+
+            response_headers = {
+                "Content-Type": mime_type,
+                "Content-Length": str(len(response_payload)),
+                "Content-Encoding": "gzip" if use_gzip else "identity",
+            }
 
             # Try to read + send over file.
             return Response(
@@ -504,6 +541,18 @@ class WebsockServer(WebsockMessageHandler):
                         compression=None,
                         process_request=(
                             viser_http_server if http_server_root is not None else None
+                        ),
+                        # Accept connections with version-based protocol and extract version in handler.
+                        subprotocols=None,
+                        select_subprotocol=lambda _, subprotocols: (
+                            next(
+                                (
+                                    Subprotocol(p)
+                                    for p in subprotocols
+                                    if p.startswith("viser-v")
+                                ),
+                                None,
+                            )
                         ),
                     ) as serve_future:
                         assert serve_future.server is not None
