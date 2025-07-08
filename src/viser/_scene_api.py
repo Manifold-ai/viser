@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Callable, Tuple, TypeVar, Union, cast, get_arg
 
 import imageio.v3 as iio
 import numpy as np
+from PIL import Image
 from typing_extensions import Literal, ParamSpec, TypeAlias, assert_never
 
 from . import _messages
@@ -1683,8 +1684,15 @@ class SceneApi:
             ), "Depth should have shape (H,W) or (H,W,1)."
             depth = np.clip(depth * 100_000, 0, 2**24 - 1).astype(np.uint32)
             assert depth is not None  # Appease mypy.
-            intdepth: np.ndarray = depth.reshape((*depth.shape[:2], 1)).view(np.uint8)
-            assert intdepth.shape == (*depth.shape[:2], 4)
+            resized_depth = np.array(
+                Image.fromarray(depth).resize(
+                    (int(np.ceil(depth.shape[0] / 2)), int(np.ceil(depth.shape[1] / 2)))
+                )
+            )
+            intdepth: np.ndarray = resized_depth.reshape(
+                (*resized_depth.shape[:2], 1)
+            ).view(np.uint8)
+            assert intdepth.shape == (*resized_depth.shape[:2], 4)
             with io.BytesIO() as data_buffer:
                 iio.imwrite(data_buffer, intdepth[:, :, :3], extension=".png")
                 depth_bytes = data_buffer.getvalue()

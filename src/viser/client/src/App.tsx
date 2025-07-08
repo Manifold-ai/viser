@@ -4,48 +4,48 @@ import "@mantine/notifications/styles.css";
 import "./App.css";
 import "./index.css";
 
-import { useInView } from "react-intersection-observer";
-import { Notifications } from "@mantine/notifications";
-import { Environment, PerformanceMonitor, Stats, Bvh } from "@react-three/drei";
-import * as THREE from "three";
-import { Canvas, useThree, useFrame } from "@react-three/fiber";
-import React, { useEffect, useMemo, useState } from "react";
-import { ViewerMutable } from "./ViewerContext";
 import {
-  Anchor,
-  Box,
-  ColorSchemeScript,
-  Image,
-  MantineProvider,
-  Modal,
-  Tooltip,
-  createTheme,
-  useMantineTheme,
+    Anchor,
+    Box,
+    ColorSchemeScript,
+    Image,
+    MantineProvider,
+    Modal,
+    Tooltip,
+    createTheme,
+    useMantineTheme,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
+import { Notifications } from "@mantine/notifications";
+import { Bvh, Environment, PerformanceMonitor, Stats } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import React, { useEffect, useMemo, useState } from "react";
+import { useInView } from "react-intersection-observer";
+import * as THREE from "three";
+import { ViewerMutable } from "./ViewerContext";
 
 // Local imports
+import { theme } from "./AppTheme";
+import { BrowserWarning } from "./BrowserWarning";
 import { SynchronizedCameraControls } from "./CameraControls";
-import { SceneNodeThreeObject } from "./SceneTree";
-import { ViewerContext, ViewerContextContents } from "./ViewerContext";
+import { ndcFromPointerXy, opencvXyFromPointerXy } from "./ClickUtils";
 import ControlPanel from "./ControlPanel/ControlPanel";
 import { useGuiState } from "./ControlPanel/GuiState";
-import { searchParamKey } from "./SearchParamsUtils";
-import { WebsocketMessageProducer } from "./WebsocketInterface";
-import { Titlebar } from "./Titlebar";
-import { ViserModal } from "./Modal";
-import { useSceneTreeState } from "./SceneTreeState";
-import { useThrottledMessageSender } from "./WebsocketFunctions";
-import { rayToViserCoords } from "./WorldTransformUtils";
-import { ndcFromPointerXy, opencvXyFromPointerXy } from "./ClickUtils";
-import { theme } from "./AppTheme";
-import { FrameSynchronizedMessageHandler } from "./MessageHandler";
-import { PlaybackFromFile } from "./FilePlayback";
-import { SplatRenderContext } from "./Splatting/GaussianSplats";
-import { BrowserWarning } from "./BrowserWarning";
-import { MacWindowWrapper } from "./MacWindowWrapper";
 import { CsmDirectionalLight } from "./CsmDirectionalLight";
+import { PlaybackFromFile } from "./FilePlayback";
+import { MacWindowWrapper } from "./MacWindowWrapper";
+import { FrameSynchronizedMessageHandler } from "./MessageHandler";
+import { ViserModal } from "./Modal";
+import { SceneNodeThreeObject } from "./SceneTree";
+import { useSceneTreeState } from "./SceneTreeState";
+import { searchParamKey } from "./SearchParamsUtils";
+import { SplatRenderContext } from "./Splatting/GaussianSplats";
+import { Titlebar } from "./Titlebar";
 import { VISER_VERSION } from "./VersionInfo";
+import { ViewerContext, ViewerContextContents } from "./ViewerContext";
+import { useThrottledMessageSender } from "./WebsocketFunctions";
+import { WebsocketMessageProducer } from "./WebsocketInterface";
+import { rayToViserCoords } from "./WorldTransformUtils";
 
 // ======= Utility functions =======
 
